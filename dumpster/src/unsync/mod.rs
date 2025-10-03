@@ -43,13 +43,26 @@ use std::{
     slice,
 };
 
-use crate::{contains_gcs, panic_deref_of_collected_object, ptr::Nullable, Trace, Visitor};
+use crate::{
+    contains_gcs, panic_deref_of_collected_object, ptr::Nullable, Trace, TraceWith, Visitor,
+};
 
-use self::collect::{Dumpster, COLLECTING, DUMPSTER};
+use self::collect::{Dfs, DropAlloc, Dumpster, Mark, COLLECTING, DUMPSTER};
 
 mod collect;
 #[cfg(test)]
 mod tests;
+
+/// Allows tracing with all unsync visitors.
+pub(crate) trait TraceUnsync:
+    TraceWith<Dfs> + TraceWith<Mark> + for<'a> TraceWith<DropAlloc<'a>>
+{
+}
+
+impl<T> TraceUnsync for T where
+    T: ?Sized + TraceWith<Dfs> + TraceWith<Mark> + for<'a> TraceWith<DropAlloc<'a>>
+{
+}
 
 #[derive(Debug)]
 /// A garbage-collected pointer.
@@ -843,8 +856,8 @@ impl CollectInfo {
     }
 }
 
-unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> Result<(), ()> {
+unsafe impl<V: Visitor, T: Trace + ?Sized> TraceWith<V> for Gc<T> {
+    fn accept(&self, visitor: &mut V) -> Result<(), ()> {
         visitor.visit_unsync(self);
         Ok(())
     }

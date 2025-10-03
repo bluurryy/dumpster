@@ -31,8 +31,8 @@ fn simple() {
         }
     }
 
-    unsafe impl Trace for Foo {
-        fn accept<V: Visitor>(&self, _: &mut V) -> Result<(), ()> {
+    unsafe impl<V: Visitor> TraceWith<V> for Foo {
+        fn accept(&self, _: &mut V) -> Result<(), ()> {
             Ok(())
         }
     }
@@ -57,8 +57,8 @@ struct MultiRef {
     drop_count: &'static AtomicUsize,
 }
 
-unsafe impl Trace for MultiRef {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> Result<(), ()> {
+unsafe impl<V: Visitor> TraceWith<V> for MultiRef {
+    fn accept(&self, visitor: &mut V) -> Result<(), ()> {
         self.refs.accept(visitor)
     }
 }
@@ -74,9 +74,9 @@ fn self_referential() {
     static DROPPED: AtomicU8 = AtomicU8::new(0);
     struct Foo(RefCell<Option<Gc<Foo>>>);
 
-    unsafe impl Trace for Foo {
+    unsafe impl<V: Visitor> TraceWith<V> for Foo {
         #[inline]
-        fn accept<V: Visitor>(&self, visitor: &mut V) -> Result<(), ()> {
+        fn accept(&self, visitor: &mut V) -> Result<(), ()> {
             self.0.accept(visitor)
         }
     }
@@ -101,9 +101,9 @@ fn cyclic() {
     static DROPPED: AtomicU8 = AtomicU8::new(0);
     struct Foo(RefCell<Option<Gc<Foo>>>);
 
-    unsafe impl Trace for Foo {
+    unsafe impl<V: Visitor> TraceWith<V> for Foo {
         #[inline]
-        fn accept<V: Visitor>(&self, visitor: &mut V) -> Result<(), ()> {
+        fn accept(&self, visitor: &mut V) -> Result<(), ()> {
             self.0.accept(visitor)
         }
     }
@@ -288,8 +288,8 @@ fn escape_dead_pointer() {
         }
     }
 
-    unsafe impl Trace for Escape {
-        fn accept<V: Visitor>(&self, visitor: &mut V) -> Result<(), ()> {
+    unsafe impl<V: Visitor> TraceWith<V> for Escape {
+        fn accept(&self, visitor: &mut V) -> Result<(), ()> {
             self.ptr.accept(visitor)
         }
     }
@@ -353,8 +353,8 @@ fn from_slice_panic() {
         }
     }
 
-    unsafe impl Trace for MayPanicOnClone {
-        fn accept<V: Visitor>(&self, _: &mut V) -> Result<(), ()> {
+    unsafe impl<V: Visitor> TraceWith<V> for MayPanicOnClone {
+        fn accept(&self, _: &mut V) -> Result<(), ()> {
             Ok(())
         }
     }
@@ -445,8 +445,8 @@ fn make_mut_of_object_in_dumpster() {
         something: Gc<i32>,
     }
 
-    unsafe impl Trace for Foo {
-        fn accept<V: Visitor>(&self, visitor: &mut V) -> Result<(), ()> {
+    unsafe impl<V: Visitor> TraceWith<V> for Foo {
+        fn accept(&self, visitor: &mut V) -> Result<(), ()> {
             self.something.accept(visitor)
         }
     }
@@ -471,4 +471,14 @@ fn make_mut_of_object_in_dumpster() {
     // we need to do something with `foo_mut` here so the mutable borrow is actually held
     // during collection
     assert_eq!(*foo_mut.something, 5);
+}
+
+#[test]
+fn custom_trait_object() {
+    trait MyTrait: Trace + Send + Sync {}
+    impl<T: Trace + Send + Sync> MyTrait for T {}
+
+    let gc = Gc::new(5i32);
+    let gc: Gc<dyn MyTrait> = unsync_coerce_gc!(gc);
+    _ = gc;
 }
