@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-use crate::{sync_coerce_gc, Visitor};
+use crate::{sync::collect::GARBAGE_TRUCK, sync_coerce_gc, Visitor};
 
 use super::*;
 
@@ -825,4 +825,44 @@ fn make_mut_of_object_in_dumpster() {
     // we need to do something with `foo_mut` here so the mutable borrow is actually held
     // during collection
     assert_eq!(*foo_mut.something, 5);
+}
+
+/// Simulates a loop like this:
+/// ```
+/// # use std::mem;
+/// # let gc = Gc::new(7i32);
+/// for _ in 0..amount {
+///     mem::forget(gc.clone());
+/// }
+/// ```
+///
+/// Running the loop normally would take *a long time* on 64 bit platforms.
+fn simulate_clone_and_forget<T: Trace + Send + Sync + ?Sized + 'static>(gc: &Gc<T>, amount: usize) {
+    let box_ref = unsafe { (*gc.ptr.get()).unwrap().as_ref() };
+    box_ref.strong.fetch_add(amount, Ordering::Acquire);
+    box_ref
+        .generation
+        .store(CURRENT_TAG.load(Ordering::Acquire), Ordering::Release);
+    GARBAGE_TRUCK
+        .n_gcs_existing
+        .fetch_add(amount, Ordering::Relaxed);
+}
+
+#[test]
+#[should_panic = "strong cannot reach zero"]
+fn strong_overflow_to_zero() {
+    let gc = Gc::new(7i32);
+    simulate_clone_and_forget(&gc, usize::MAX);
+    assert_eq!(Gc::ref_count(&gc).get(), 0);
+}
+
+/// Leads to use after free!
+#[test]
+fn strong_overflow_to_one() {
+    let gc = Gc::new(7i32);
+    simulate_clone_and_forget(&gc, usize::MAX);
+    let gc_clone = gc.clone();
+    assert_eq!(Gc::ref_count(&gc).get(), 1);
+    drop(gc_clone);
+    drop(gc);
 }

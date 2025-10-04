@@ -28,7 +28,7 @@ use super::{default_collect_condition, CollectCondition, CollectInfo, Gc, GcBox,
 
 /// The garbage truck, which is a global data structure containing information about allocations
 /// which might need to be collected.
-struct GarbageTruck {
+pub(super) struct GarbageTruck {
     /// The contents of the garbage truck, containing all the allocations which need to be
     /// collected and have already been delivered by a [`Dumpster`].
     contents: Mutex<HashMap<AllocationId, TrashCan>>,
@@ -40,7 +40,7 @@ struct GarbageTruck {
     n_gcs_dropped: AtomicUsize,
     /// The number of [`Gc`]s currently existing (which have not had their internals replaced with
     /// `None`).
-    n_gcs_existing: AtomicUsize,
+    pub(super) n_gcs_existing: AtomicUsize,
     /// The function which determines whether a collection should be triggered.
     /// This pointer value should always be cast to a [`CollectCondition`], but since `AtomicPtr`
     /// doesn't handle function pointers correctly, we just cast to `*mut ()`.
@@ -103,7 +103,7 @@ enum Reachability {
 
 /// The global garbage truck.
 /// All [`TrashCan`]s should eventually end up in here.
-static GARBAGE_TRUCK: LazyLock<GarbageTruck> = LazyLock::new(|| GarbageTruck {
+pub(super) static GARBAGE_TRUCK: LazyLock<GarbageTruck> = LazyLock::new(|| GarbageTruck {
     contents: Mutex::new(HashMap::new()),
     collecting_lock: RwLock::new(()),
     n_gcs_dropped: AtomicUsize::new(0),
