@@ -31,6 +31,8 @@ mod collect;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "coerce-unsized")]
+use std::marker::Unsize;
 use std::{
     alloc::{dealloc, handle_alloc_error, Layout},
     borrow::{Borrow, Cow},
@@ -44,12 +46,21 @@ use std::{
     sync::atomic::{fence, AtomicUsize, Ordering},
 };
 
-use crate::{contains_gcs, panic_deref_of_collected_object, ptr::Nullable, Trace, Visitor};
+use crate::{
+    contains_gcs,
+    option::{gc_ptr, Opt},
+    panic_deref_of_collected_object,
+    ptr::Nullable,
+    Trace, Visitor,
+};
 
 use self::collect::{
     collect_all_await, currently_cleaning, mark_clean, mark_dirty, n_gcs_dropped, n_gcs_existing,
     notify_created_gc, notify_dropped_gc,
 };
+
+/// An alternative for <code>[Option]\<[Gc]\<T\>\></code> that takes up less space.
+pub type OptGc<T> = Opt<Gc<T>>;
 
 /// A thread-safe garbage-collected pointer.
 ///
@@ -93,6 +104,40 @@ pub struct Gc<T: Trace + Send + Sync + ?Sized + 'static> {
     tag: AtomicUsize,
 }
 
+impl<T> gc_ptr::Sealed for Gc<T>
+where
+    T: Trace + Send + Sync + ?Sized + 'static,
+{
+    type T = T;
+
+    #[inline]
+    fn dead() -> Self
+    where
+        Self::T: Sized,
+    {
+        Self {
+            ptr: UnsafeCell::new(Nullable::NULL),
+            tag: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    #[cfg(feature = "coerce-unsized")]
+    fn dead_with_metadata_of<U>() -> Self
+    where
+        U: Unsize<Self::T>,
+    {
+        let thin: *mut GcBox<U> = ptr::null_mut();
+        let fat: *mut GcBox<T> = thin;
+        unsafe { Gc::from_ptr(fat, 0) }
+    }
+
+    #[inline]
+    fn is_dead(&self) -> bool {
+        Gc::is_dead(self)
+    }
+}
+
 /// The tag of the current sweep operation.
 /// All new allocations are minted with the current tag.
 static CURRENT_TAG: AtomicUsize = AtomicUsize::new(0);
@@ -101,10 +146,7 @@ static CURRENT_TAG: AtomicUsize = AtomicUsize::new(0);
 // This is only public to make the `sync_coerce_gc` macro work.
 #[doc(hidden)]
 /// The backing allocation for a [`Gc`].
-pub struct GcBox<T>
-where
-    T: Trace + Send + Sync + ?Sized,
-{
+pub struct GcBox<T: ?Sized> {
     /// The "strong" count, which is the number of extant `Gc`s to this allocation.
     /// If the strong count is zero, a value contained in the allocation may be dropped, but the
     /// allocation itself must still be valid.

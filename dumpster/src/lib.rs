@@ -183,9 +183,12 @@ let gc1: Gc<[u8]> = Gc::new([1, 2, 3]);
 
 mod impls;
 
+mod option;
 mod ptr;
 pub mod sync;
 pub mod unsync;
+
+pub use option::{GcPtr, Opt};
 
 /// The trait that any garbage-collected data must implement.
 ///

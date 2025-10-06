@@ -43,13 +43,25 @@ use std::{
     slice,
 };
 
-use crate::{contains_gcs, panic_deref_of_collected_object, ptr::Nullable, Trace, Visitor};
+#[cfg(feature = "coerce-unsized")]
+use std::marker::Unsize;
+
+use crate::{
+    contains_gcs,
+    option::{gc_ptr, Opt},
+    panic_deref_of_collected_object,
+    ptr::Nullable,
+    Trace, Visitor,
+};
 
 use self::collect::{Dumpster, COLLECTING, DUMPSTER};
 
 mod collect;
 #[cfg(test)]
 mod tests;
+
+/// An alternative for <code>[Option]\<[Gc]\<T\>\></code> that takes up less space.
+pub type OptGc<T> = Opt<Gc<T>>;
 
 #[derive(Debug)]
 /// A garbage-collected pointer.
@@ -193,11 +205,44 @@ pub fn set_collect_condition(f: CollectCondition) {
 // This is only public to make the `unsync_coerce_gc` macro work.
 #[doc(hidden)]
 /// The underlying heap allocation for a [`Gc`].
-pub struct GcBox<T: Trace + ?Sized> {
+pub struct GcBox<T: ?Sized> {
     /// The number of extant references to this garbage-collected data.
     ref_count: Cell<NonZeroUsize>,
     /// The stored value inside this garbage-collected box.
     value: T,
+}
+
+impl<T> gc_ptr::Sealed for Gc<T>
+where
+    T: Trace + ?Sized + 'static,
+{
+    type T = T;
+
+    #[inline]
+    fn dead() -> Self
+    where
+        Self::T: Sized,
+    {
+        Self {
+            ptr: Cell::new(Nullable::NULL),
+        }
+    }
+
+    #[inline]
+    #[cfg(feature = "coerce-unsized")]
+    fn dead_with_metadata_of<U>() -> Self
+    where
+        U: Unsize<Self::T>,
+    {
+        let thin: *mut GcBox<U> = ptr::null_mut();
+        let fat: *mut GcBox<T> = thin;
+        unsafe { Gc::from_ptr(fat) }
+    }
+
+    #[inline]
+    fn is_dead(&self) -> bool {
+        Gc::is_dead(self)
+    }
 }
 
 impl<T: Trace + ?Sized> Gc<T> {
@@ -416,6 +461,7 @@ impl<T: Trace + ?Sized> Gc<T> {
     /// # drop(gc1);
     /// # dumpster::unsync::collect();
     /// ```
+    #[inline]
     pub fn is_dead(&self) -> bool {
         self.ptr.get().is_null()
     }
