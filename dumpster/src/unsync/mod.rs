@@ -44,13 +44,30 @@ use std::{
     slice,
 };
 
-use crate::{contains_gcs, panic_deref_of_collected_object, ptr::Nullable, Trace, Visitor};
+use crate::{
+    contains_gcs, panic_deref_of_collected_object, ptr::Nullable, Trace, TraceWith, Visitor,
+};
 
-use self::collect::{Dumpster, COLLECTING, DUMPSTER};
+use self::collect::{Dfs, DropAlloc, Dumpster, Mark, COLLECTING, DUMPSTER};
 
 mod collect;
 #[cfg(test)]
 mod tests;
+
+/// Allows tracing with all unsync visitors.
+pub(crate) trait TraceUnsync:
+    TraceWith<Dfs> + TraceWith<Mark> + for<'a> TraceWith<DropAlloc<'a>> + TraceWith<Rehydrate>
+{
+}
+
+impl<T> TraceUnsync for T where
+    T: ?Sized
+        + TraceWith<Dfs>
+        + TraceWith<Mark>
+        + for<'a> TraceWith<DropAlloc<'a>>
+        + TraceWith<Rehydrate>
+{
+}
 
 #[derive(Debug)]
 /// A garbage-collected pointer.
@@ -226,33 +243,36 @@ impl<T: Trace + ?Sized> Gc<T> {
 
     /// Construct a self-referencing `Gc`.
     ///
-    /// `new_cyclic` first allocates memory for `T`, then constructs a dead `Gc` pointing to the allocation.
-    /// The dead `Gc` is then passed to `data_fn` to construct a value of `T`, which is stored in the allocation.
-    /// Finally, `new_cyclic` will update the dead self-referential `Gc`s and rehydrate them to produce the final value.
+    /// `new_cyclic` first allocates memory for `T`, then constructs a dead `Gc` pointing to the
+    /// allocation. The dead `Gc` is then passed to `data_fn` to construct a value of `T`, which
+    /// is stored in the allocation. Finally, `new_cyclic` will update the dead self-referential
+    /// `Gc`s and rehydrate them to produce the final value.
     ///
     /// # Panics
     ///
     /// If `data_fn` panics, the panic is propagated to the caller.
     /// The allocation is cleaned up normally.
     ///
-    /// Additionally, if, when attempting to rehydrate the `Gc` members of `F`, the visitor fails to reach a `Gc`, this
-    /// function will panic and reserve the allocation to be cleaned up later.
+    /// Additionally, if, when attempting to rehydrate the `Gc` members of `F`, the visitor fails to
+    /// reach a `Gc`, this function will panic and reserve the allocation to be cleaned up
+    /// later.
     ///
     /// # Notes on safety
     ///
     /// Incorrect implementations of `data_fn` may have unusual or strange results.
-    /// Although `dumpster` guarantees that it will be safe, and will do its best to ensure correct results,
-    /// it is generally unwise to allow dead `Gc`s to exist for long.
-    /// If you implement `data_fn` wrong, this may cause panics later on inside of the collection process.
+    /// Although `dumpster` guarantees that it will be safe, and will do its best to ensure correct
+    /// results, it is generally unwise to allow dead `Gc`s to exist for long.
+    /// If you implement `data_fn` wrong, this may cause panics later on inside of the collection
+    /// process.
     ///
     /// # Examples
     ///
     /// ```
-    /// use dumpster::{Trace, unsync::Gc};
+    /// use dumpster::{unsync::Gc, Trace};
     ///
     /// #[derive(Trace)]
     /// struct Cycle {
-    ///     this: Gc<Self>
+    ///     this: Gc<Self>,
     /// }
     ///
     /// let gc = Gc::new_cyclic(|this| Cycle { this });
@@ -266,47 +286,17 @@ impl<T: Trace + ?Sized> Gc<T> {
         /// May only be used inside `make_mut`.
         struct Uninitialized<T>(MaybeUninit<T>);
 
-        unsafe impl<T> Trace for Uninitialized<T> {
-            fn accept<V: Visitor>(&self, _: &mut V) -> Result<(), ()> {
+        unsafe impl<V: Visitor, T> TraceWith<V> for Uninitialized<T> {
+            fn accept(&self, _: &mut V) -> Result<(), ()> {
                 Ok(())
-            }
-        }
-
-        /// A struct for converting dead `Gc`s into live ones.
-        struct Rehydrate<U: Trace + 'static>(Nullable<GcBox<U>>);
-
-        impl<U: Trace + 'static> Visitor for Rehydrate<U> {
-            fn visit_sync<T>(&mut self, _: &crate::sync::Gc<T>)
-            where
-                T: Trace + Send + Sync + ?Sized,
-            {
-            }
-
-            fn visit_unsync<T>(&mut self, gc: &Gc<T>)
-            where
-                T: Trace + ?Sized,
-            {
-                if TypeId::of::<T>() == TypeId::of::<U>() && gc.is_dead() {
-                    unsafe {
-                        // SAFETY: it is safe to transmute these pointers because we have checked
-                        // that they are of the same type.
-                        // Additionally, the `GcBox` has been fully initialized, so it is safe to create a reference here.
-                        let cell_ptr = (&raw const gc.ptr).cast::<Cell<Nullable<GcBox<U>>>>();
-                        (*cell_ptr).set(self.0);
-
-                        let box_ref = &*self.0.as_ptr();
-                        box_ref
-                            .ref_count
-                            .set(box_ref.ref_count.get().saturating_add(1));
-                        DUMPSTER.with(Dumpster::notify_created_gc);
-                    }
-                }
             }
         }
 
         /// Data structure for cleaning up the allocation in case we panic along the way.
         struct CleanUp<T: Trace + 'static> {
+            /// Is `true` if the [`GcBox::value`] is initialized.
             initialized: bool,
+            /// Pointer to the maybe uninitialized `GcBox`.
             ptr: NonNull<GcBox<T>>,
         }
 
@@ -340,12 +330,12 @@ impl<T: Trace + ?Sized> Gc<T> {
 
         // nilgc is a dead Gc
         let nilgc = Gc {
-            ptr: Cell::new(Nullable::new(NonNull::from(gcbox.cast::<GcBox<T>>())).as_null()),
+            ptr: Cell::new(Nullable::new(gcbox.cast::<GcBox<T>>()).as_null()),
         };
         assert!(nilgc.is_dead());
         unsafe {
             // SAFETY: `gcbox` is a valid pointer to an uninitialized datum that we have allocated.
-            (*gcbox.as_mut()).value = Uninitialized(MaybeUninit::new(data_fn(nilgc)));
+            gcbox.as_mut().value = Uninitialized(MaybeUninit::new(data_fn(nilgc)));
         }
         cleanup.initialized = true;
 
@@ -353,10 +343,10 @@ impl<T: Trace + ?Sized> Gc<T> {
         let res = unsafe {
             // SAFETY: the above unsafe block correctly constructed the Uninitialized value, so it
             // is safe to cast `gcbox` and then construct a reference.
-            gcbox
-                .as_ref()
-                .value
-                .accept(&mut Rehydrate(Nullable::new(gcbox)))
+            gcbox.as_ref().value.accept(&mut Rehydrate {
+                ptr: Nullable::new(gcbox.cast()),
+                type_id: TypeId::of::<T>(),
+            })
         };
 
         assert!(
@@ -599,6 +589,46 @@ impl<T: Trace + ?Sized> Gc<T> {
     #[doc(hidden)]
     pub unsafe fn __private_from_ptr(ptr: *const GcBox<T>) -> Self {
         Self::from_ptr(ptr)
+    }
+}
+
+/// A struct for converting dead `Gc`s into live ones.
+///
+/// This is used in [`Gc::new_cyclic`].
+pub(crate) struct Rehydrate {
+    /// The pointer to the currently hydrating [`GcBox`].
+    ptr: Nullable<GcBox<()>>,
+    /// The [`TypeId`] of `T` in `Gc<T>` to be hydrated.
+    type_id: TypeId,
+}
+
+impl Visitor for Rehydrate {
+    fn visit_sync<T>(&mut self, _: &crate::sync::Gc<T>)
+    where
+        T: Trace + Send + Sync + ?Sized,
+    {
+    }
+
+    fn visit_unsync<T>(&mut self, gc: &Gc<T>)
+    where
+        T: Trace + ?Sized,
+    {
+        if TypeId::of::<T>() == self.type_id && gc.is_dead() {
+            unsafe {
+                // SAFETY: it is safe to transmute these pointers because we have checked
+                // that they are of the same type.
+                // Additionally, the `GcBox` has been fully initialized, so it is safe to create a
+                // reference here.
+                let cell_ptr = (&raw const gc.ptr).cast::<Cell<Nullable<GcBox<()>>>>();
+                (*cell_ptr).set(self.ptr);
+
+                let box_ref = &*self.ptr.as_ptr();
+                box_ref
+                    .ref_count
+                    .set(box_ref.ref_count.get().saturating_add(1));
+                DUMPSTER.with(Dumpster::notify_created_gc);
+            }
+        }
     }
 }
 
@@ -996,8 +1026,8 @@ impl CollectInfo {
     }
 }
 
-unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
-    fn accept<V: Visitor>(&self, visitor: &mut V) -> Result<(), ()> {
+unsafe impl<V: Visitor, T: Trace + ?Sized> TraceWith<V> for Gc<T> {
+    fn accept(&self, visitor: &mut V) -> Result<(), ()> {
         visitor.visit_unsync(self);
         Ok(())
     }
