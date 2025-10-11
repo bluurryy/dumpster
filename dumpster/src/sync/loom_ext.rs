@@ -44,10 +44,6 @@ impl<T> Mutex<T> {
     pub fn lock(&self) -> MutexGuard<'_, T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    pub fn is_locked(&self) -> bool {
-        !matches!(self.0.try_lock(), Err(TryLockError::WouldBlock))
-    }
 }
 
 pub struct RwLock<T>(RwLockImpl<T>);
@@ -74,13 +70,14 @@ impl Once {
     }
 
     fn call_once(&self, f: impl FnOnce()) {
-        if self.is_completed() {
+        let mut is_completed = self.0.lock();
+
+        if *is_completed {
             return;
         }
 
-        let mut guard = self.0.lock();
         f();
-        *guard = true;
+        *is_completed = true;
     }
 
     fn is_completed(&self) -> bool {
@@ -138,18 +135,24 @@ impl<T> OnceLock<T> {
     }
 }
 
-pub struct LazyLock<T>(OnceLock<T>, fn() -> T);
+#[test]
+fn test_once_lock() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-impl<T> LazyLock<T> {
-    pub fn new(f: fn() -> T) -> Self {
-        Self(OnceLock::new(), f)
-    }
-}
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-impl<T> Deref for LazyLock<T> {
-    type Target = T;
+    loom::model(|| {
+        let once_lock = OnceLock::<String>::new();
+        once_lock.with_or_init(
+            || {
+                COUNTER.fetch_add(1, Ordering::Relaxed);
+                String::from("test")
+            },
+            |value| {
+                assert_eq!(value, "test");
+            },
+        );
 
-    fn deref(&self) -> &Self::Target {
-        todo!()
-    }
+        assert_eq!(COUNTER.load(Ordering::Relaxed), 1);
+    });
 }
