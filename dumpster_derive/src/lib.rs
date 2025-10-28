@@ -18,6 +18,8 @@ use syn::{
     Generics, Ident, Index, Path,
 };
 
+const MAJOR_VERSION: &str = env!("CARGO_PKG_VERSION_MAJOR");
+
 #[proc_macro_derive(Trace, attributes(dumpster))]
 pub fn derive_trace(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -71,7 +73,16 @@ pub fn derive_trace(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let do_visitor = delegate_methods(&dumpster, name, &input.data);
 
+    let version_check = quote! {
+        const _: () = assert!(
+            #dumpster::__::const_str_eq(#MAJOR_VERSION, #dumpster::__::MAJOR_VERSION),
+            "`dumpster` and `dumpster_derive` have incompatible versions!"
+        );
+    };
+
     let generated = quote! {
+        #version_check
+
         unsafe impl #impl_generics #dumpster::TraceWith<__V> for #name #ty_generics #where_clause {
             #[inline]
             fn accept(&self, visitor: &mut __V) -> ::core::result::Result<(), ()> {

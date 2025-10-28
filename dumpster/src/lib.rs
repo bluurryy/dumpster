@@ -434,3 +434,31 @@ fn panic_deref_of_collected_object() -> ! {
     This means a Gc escaped from a Drop implementation, likely implying a bug in your code.",
     );
 }
+
+#[doc(hidden)]
+pub mod __ {
+    /// Used to make sure the derive macro creates an impl for a compatible version of dumpster.
+    pub const MAJOR_VERSION: &str = env!("CARGO_PKG_VERSION_MAJOR");
+
+    /// Used to compare the [`MAJOR_VERSION`] above for a static assertion.
+    pub const fn const_str_eq(a: &str, b: &str) -> bool {
+        let a = a.as_bytes();
+        let b = b.as_bytes();
+
+        if a.len() != b.len() {
+            return false;
+        }
+
+        let mut i = 0;
+
+        while i < a.len() {
+            if a[i] != b[i] {
+                return false;
+            }
+
+            i += 1;
+        }
+
+        true
+    }
+}
