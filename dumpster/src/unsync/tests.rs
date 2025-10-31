@@ -750,3 +750,19 @@ fn custom_trait_object() {
     let gc: Gc<dyn MyTrait> = coerce_gc!(gc);
     _ = gc;
 }
+
+#[test]
+fn coerce_opt_gc() {
+    let gc: OptGc<[i32]> = coerce_opt_gc!(OptGc::<[i32; 0]>::NONE);
+    assert!(gc.is_none());
+
+    let gc: OptGc<dyn Trace> = coerce_opt_gc!(OptGc::<i32>::NONE);
+    assert!(gc.is_none());
+}
+
+#[test]
+fn clone_none_opt_gc() {
+    let gc1 = OptGc::<i32>::NONE;
+    let gc2 = gc1.clone();
+    assert!(gc1.ptr_eq(&gc2));
+}

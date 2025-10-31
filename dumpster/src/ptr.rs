@@ -11,7 +11,7 @@
 use std::{
     fmt,
     mem::{size_of, MaybeUninit},
-    ptr::{addr_of, addr_of_mut, copy_nonoverlapping, null, NonNull},
+    ptr::{addr_of, addr_of_mut, copy_nonoverlapping, null, null_mut, NonNull},
 };
 
 #[repr(C)]
@@ -87,6 +87,11 @@ impl fmt::Debug for Erased {
 ///
 /// We need this because it's actually impossible to create a null `*mut T` if `T` is `?Sized`.
 pub(crate) struct Nullable<T: ?Sized>(*mut T);
+
+impl<T> Nullable<T> {
+    /// A null pointer.
+    pub const NULL: Self = Self(null_mut());
+}
 
 impl<T: ?Sized> Nullable<T> {
     /// Create a new nullable pointer from a non-null pointer.

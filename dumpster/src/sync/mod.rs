@@ -40,6 +40,7 @@ use std::{
     alloc::{dealloc, handle_alloc_error, Layout},
     any::TypeId,
     borrow::{Borrow, Cow},
+    fmt,
     fmt::Debug,
     mem::{self, ManuallyDrop, MaybeUninit},
     num::NonZeroUsize,
@@ -57,7 +58,9 @@ use loom::{
 use std::sync::atomic::{fence, AtomicUsize, Ordering};
 
 use crate::{
-    contains_gcs, panic_deref_of_collected_object,
+    contains_gcs,
+    option::make_opt_gc,
+    panic_deref_of_collected_object,
     ptr::Nullable,
     sync::{
         cell::UCell,
@@ -136,6 +139,8 @@ pub struct Gc<T: Trace + Send + Sync + ?Sized + 'static> {
     tag: AtomicUsize,
 }
 
+make_opt_gc!(sync, visit_sync; Send + Sync);
+
 #[cfg(not(loom))]
 /// The tag of the current sweep operation.
 /// All new allocations are minted with the current tag.
@@ -152,7 +157,7 @@ lazy_static! {
 /// The backing allocation for a [`Gc`].
 pub struct GcBox<T>
 where
-    T: Trace + Send + Sync + ?Sized,
+    T: ?Sized,
 {
     /// The "strong" count, which is the number of extant `Gc`s to this allocation.
     /// If the strong count is zero, a value contained in the allocation may be dropped, but the
@@ -264,6 +269,18 @@ pub fn default_collect_condition(info: &CollectInfo) -> bool {
 }
 
 pub use collect::set_collect_condition;
+
+impl<T> Gc<T>
+where
+    T: Trace + Send + Sync,
+{
+    /// A dead gc pointer.
+    #[expect(clippy::declare_interior_mutable_const)]
+    const DEAD: Self = Self {
+        ptr: UCell::new(Nullable::NULL),
+        tag: AtomicUsize::new(0),
+    };
+}
 
 impl<T> Gc<T>
 where
@@ -808,6 +825,20 @@ macro_rules! __sync_coerce_gc {
 
 #[doc(inline)]
 pub use crate::__sync_coerce_gc as coerce_gc;
+
+/// Allows coercing `T` of [`OptGc<T>`](OptGc).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __sync_coerce_opt_gc {
+    ($gc:expr) => {{
+        $crate::sync::OptGc::from_maybe_dead_gc($crate::sync::coerce_gc!(
+            $crate::sync::OptGc::into_maybe_dead_gc($gc)
+        ))
+    }};
+}
+
+#[doc(inline)]
+pub use crate::__sync_coerce_opt_gc as coerce_opt_gc;
 
 impl<T> Clone for Gc<T>
 where

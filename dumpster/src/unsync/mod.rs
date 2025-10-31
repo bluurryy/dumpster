@@ -37,6 +37,7 @@ use std::{
     any::TypeId,
     borrow::{Borrow, Cow},
     cell::Cell,
+    fmt,
     mem::{self, ManuallyDrop, MaybeUninit},
     num::NonZeroUsize,
     ops::Deref,
@@ -45,7 +46,8 @@ use std::{
 };
 
 use crate::{
-    contains_gcs, panic_deref_of_collected_object, ptr::Nullable, Trace, TraceWith, Visitor,
+    contains_gcs, option::make_opt_gc, panic_deref_of_collected_object, ptr::Nullable, Trace,
+    TraceWith, Visitor,
 };
 
 use self::collect::{Dfs, DropAlloc, Dumpster, Mark, DUMPSTER};
@@ -108,6 +110,8 @@ pub struct Gc<T: Trace + ?Sized + 'static> {
     /// of a [`Trace`] type.
     ptr: Cell<Nullable<GcBox<T>>>,
 }
+
+make_opt_gc!(unsync, visit_unsync;);
 
 /// Collect all existing unreachable allocations.
 ///
@@ -212,11 +216,19 @@ pub fn set_collect_condition(f: CollectCondition) {
 // This is only public to make the `unsync_coerce_gc` macro work.
 #[doc(hidden)]
 /// The underlying heap allocation for a [`Gc`].
-pub struct GcBox<T: Trace + ?Sized> {
+pub struct GcBox<T: ?Sized> {
     /// The number of extant references to this garbage-collected data.
     ref_count: Cell<NonZeroUsize>,
     /// The stored value inside this garbage-collected box.
     value: T,
+}
+
+impl<T: Trace> Gc<T> {
+    /// A dead gc pointer.
+    #[expect(clippy::declare_interior_mutable_const)]
+    const DEAD: Self = Self {
+        ptr: Cell::new(Nullable::NULL),
+    };
 }
 
 impl<T: Trace + ?Sized> Gc<T> {
@@ -785,6 +797,20 @@ macro_rules! __unsync_coerce_gc {
 
 #[doc(inline)]
 pub use crate::__unsync_coerce_gc as coerce_gc;
+
+/// Allows coercing `T` of [`OptGc<T>`](OptGc).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __unsync_coerce_opt_gc {
+    ($gc:expr) => {{
+        $crate::unsync::OptGc::from_maybe_dead_gc($crate::unsync::coerce_gc!(
+            $crate::unsync::OptGc::into_maybe_dead_gc($gc)
+        ))
+    }};
+}
+
+#[doc(inline)]
+pub use crate::__unsync_coerce_opt_gc as coerce_opt_gc;
 
 impl<T: Trace + ?Sized> Deref for Gc<T> {
     type Target = T;

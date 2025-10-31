@@ -21,7 +21,7 @@ pub struct UCell<T>(UnsafeCell<T>);
 
 impl<T> UCell<T> {
     /// Construct a `UCell` containing the value.
-    pub fn new(x: T) -> Self {
+    pub const fn new(x: T) -> Self {
         Self(UnsafeCell::new(x))
     }
 
