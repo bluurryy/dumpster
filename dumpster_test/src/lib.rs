@@ -16,8 +16,10 @@ use std::{
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
-use dumpster::unsync::{collect, Gc};
-use dumpster_derive::Trace;
+use dumpster::{
+    unsync::{collect, Gc},
+    Trace,
+};
 
 #[derive(Trace)]
 struct Empty;
@@ -184,3 +186,52 @@ fn unsync_as_ptr() {
     assert_ne!(Gc::as_ptr(&b.0), Gc::as_ptr(&b2.0));
     assert_ne!(Gc::as_ptr(&b.0), empty2_ptr);
 }
+
+#[test]
+fn ignore_trace() {
+    /// Simulate a struct from a third party crate that doesn't implement [`Trace`].
+    struct ForeignStruct;
+
+    #[derive(Trace)]
+    struct UserStruct {
+        #[dumpster(trace(ignore))]
+        untraced: ForeignStruct,
+        traced: Gc<DropCount>,
+    }
+
+    static DROP_COUNT: AtomicU8 = AtomicU8::new(0);
+    #[derive(Trace)]
+    struct DropCount;
+
+    impl Drop for DropCount {
+        fn drop(&mut self) {
+            DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let gc1 = Gc::new(UserStruct {
+        untraced: ForeignStruct,
+        traced: Gc::new(DropCount),
+    });
+
+    let gc2 = Gc::clone(&gc1);
+
+    drop(gc1);
+    assert_eq!(DROP_COUNT.load(Ordering::Relaxed), 0);
+    drop(gc2);
+    assert_eq!(DROP_COUNT.load(Ordering::Relaxed), 1);
+}
+
+// A `trace(ignore)`'d struct should not have `Trace` bounds for `T`.
+const _: () = {
+    #[derive(Trace)]
+    #[dumpster(trace(ignore))]
+    struct UntracedGeneric<T>(T);
+
+    struct ForeignStruct;
+
+    const fn implements_trace(_: &impl Trace) {}
+
+    implements_trace(&UntracedGeneric(5i32));
+    implements_trace(&UntracedGeneric(ForeignStruct));
+};
