@@ -194,6 +194,7 @@ fn ignore_trace() {
 
     #[derive(Trace)]
     struct UserStruct {
+        #[expect(dead_code)]
         #[dumpster(trace(ignore))]
         untraced: ForeignStruct,
         traced: Gc<DropCount>,
@@ -222,16 +223,27 @@ fn ignore_trace() {
     assert_eq!(DROP_COUNT.load(Ordering::Relaxed), 1);
 }
 
+/// Some struct that doesn't implement `Trace`.
+struct ForeignStruct;
+
+const fn implements_trace(_: &impl Trace) {}
+
+/// A generic struct that does not trace its field.
+#[derive(Trace)]
+#[dumpster(trace(ignore))]
+struct UntracedGeneric<T>(T);
+
 // A `trace(ignore)`'d struct should not have `Trace` bounds for `T`.
 const _: () = {
-    #[derive(Trace)]
-    #[dumpster(trace(ignore))]
-    struct UntracedGeneric<T>(T);
-
-    struct ForeignStruct;
-
-    const fn implements_trace(_: &impl Trace) {}
-
     implements_trace(&UntracedGeneric(5i32));
     implements_trace(&UntracedGeneric(ForeignStruct));
+};
+
+// A generic struct should not have a `Trace` bound for each generic, but for the fields instead.
+const _: () = {
+    #[derive(Trace)]
+    struct Foo<T>(UntracedGeneric<T>);
+
+    implements_trace(&Foo(UntracedGeneric(5i32)));
+    implements_trace(&Foo(UntracedGeneric(ForeignStruct)));
 };
