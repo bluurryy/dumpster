@@ -19,8 +19,9 @@ use std::{
 
 use dumpster_bench::{
     ArcMultiref, BaconRajanMultiref, DumpsterSyncMultiref, DumpsterUnsyncMultiref, GcMultiref,
-    Multiref, RcMultiref, RustCcMultiRef, ShredderMultiref, ShredderSyncMultiref, SyncMultiref,
-    TracingRcSyncMultiRef, TracingRcUnsyncMultiRef,
+    JrsonnetGcmoduleSyncMultiref, JrsonnetGcmoduleUnsyncMultiref, Multiref, RcMultiref,
+    RustCcMultiRef, ShredderMultiref, ShredderSyncMultiref, SyncMultiref, TracingRcSyncMultiRef,
+    TracingRcUnsyncMultiRef,
 };
 
 use parking_lot::Mutex;
@@ -123,6 +124,20 @@ fn main() {
                 N_ITERS
             )
         );
+        println!(
+            "{}",
+            single_threaded::<jrsonnet_gcmodule::Cc<JrsonnetGcmoduleUnsyncMultiref>>(
+                "jrsonnet-gcmodule (unsync)",
+                N_ITERS
+            )
+        );
+        println!(
+            "{}",
+            single_threaded::<jrsonnet_gcmodule::ThreadedCc<JrsonnetGcmoduleSyncMultiref>>(
+                "jrsonnet-gcmodule (sync)",
+                N_ITERS
+            )
+        );
         for n_threads in 1..=available_parallelism().unwrap().get() {
             // println!("--- {n_threads} threads");
             dumpster::sync::set_collect_condition(dumpster::sync::default_collect_condition);
@@ -148,6 +163,14 @@ fn main() {
                 "{}",
                 multi_threaded::<tracing_rc::sync::Agc<TracingRcSyncMultiRef>>(
                     "tracing-rc (sync)",
+                    N_ITERS,
+                    n_threads
+                )
+            );
+            println!(
+                "{}",
+                multi_threaded::<tracing_rc::sync::Agc<TracingRcSyncMultiRef>>(
+                    "jrsonnet-gcmodule (sync)",
                     N_ITERS,
                     n_threads
                 )

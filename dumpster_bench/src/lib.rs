@@ -11,7 +11,7 @@
 
 use std::{
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 /// A garbage-collected structure which points to an arbitrary number of other garbage-collected
@@ -130,6 +130,38 @@ pub struct TracingRcSyncMultiRef {
 impl tracing_rc::sync::Trace for TracingRcSyncMultiRef {
     fn visit_children(&self, visitor: &mut tracing_rc::sync::GcVisitor) {
         self.refs.lock().unwrap().visit_children(visitor)
+    }
+}
+
+pub struct JrsonnetGcmoduleUnsyncMultiref {
+    refs: Mutex<Vec<jrsonnet_gcmodule::Cc<Self>>>,
+}
+
+// Manually implemented, because the derive can't handle a self referential types.
+// It would lead to a stack overflow in `is_type_tracked`.
+impl ::jrsonnet_gcmodule::Trace for JrsonnetGcmoduleUnsyncMultiref {
+    fn trace(&self, tracer: &mut ::jrsonnet_gcmodule::Tracer) {
+        ::jrsonnet_gcmodule::Trace::trace(&self.refs, tracer);
+    }
+
+    fn is_type_tracked() -> bool {
+        true
+    }
+}
+
+pub struct JrsonnetGcmoduleSyncMultiref {
+    refs: Mutex<Vec<jrsonnet_gcmodule::ThreadedCc<Self>>>,
+}
+
+// Manually implemented, because the derive can't handle a self referential types.
+// It would lead to a stack overflow in `is_type_tracked`.
+impl ::jrsonnet_gcmodule::Trace for JrsonnetGcmoduleSyncMultiref {
+    fn trace(&self, tracer: &mut ::jrsonnet_gcmodule::Tracer) {
+        ::jrsonnet_gcmodule::Trace::trace(&self.refs, tracer);
+    }
+
+    fn is_type_tracked() -> bool {
+        true
     }
 }
 
@@ -276,6 +308,38 @@ impl Multiref for tracing_rc::sync::Agc<TracingRcSyncMultiRef> {
     }
 }
 
+impl Multiref for jrsonnet_gcmodule::Cc<JrsonnetGcmoduleUnsyncMultiref> {
+    fn new(points_to: Vec<Self>) -> Self {
+        jrsonnet_gcmodule::Cc::new(JrsonnetGcmoduleUnsyncMultiref {
+            refs: Mutex::new(points_to),
+        })
+    }
+
+    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
+        f(self.refs.lock().unwrap().as_mut());
+    }
+
+    fn collect() {
+        jrsonnet_gcmodule::collect_thread_cycles();
+    }
+}
+
+impl Multiref for jrsonnet_gcmodule::ThreadedCc<JrsonnetGcmoduleSyncMultiref> {
+    fn new(points_to: Vec<Self>) -> Self {
+        JRSONNET_GCMODULE_THREADED_OBJECT_SPACE.create(JrsonnetGcmoduleSyncMultiref {
+            refs: Mutex::new(points_to),
+        })
+    }
+
+    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
+        f(self.borrow().refs.lock().unwrap().as_mut());
+    }
+
+    fn collect() {
+        JRSONNET_GCMODULE_THREADED_OBJECT_SPACE.collect_cycles();
+    }
+}
+
 impl Multiref for Rc<RcMultiref> {
     fn new(points_to: Vec<Self>) -> Self {
         Rc::new(RcMultiref {
@@ -303,3 +367,6 @@ impl Multiref for Arc<ArcMultiref> {
 
     fn collect() {}
 }
+
+static JRSONNET_GCMODULE_THREADED_OBJECT_SPACE: LazyLock<jrsonnet_gcmodule::ThreadedObjectSpace> =
+    LazyLock::new(Default::default);
