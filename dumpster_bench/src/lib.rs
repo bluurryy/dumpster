@@ -7,12 +7,7 @@
     file, You can obtain one at http://mozilla.org/MPL/2.0/.
 */
 
-#![expect(non_local_definitions)]
-
-use std::{
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::sync::Mutex;
 
 /// A garbage-collected structure which points to an arbitrary number of other garbage-collected
 /// structures.
@@ -32,274 +27,44 @@ pub trait SyncMultiref: Send + Sync + Multiref {}
 
 impl<T> SyncMultiref for T where T: Send + Sync + Multiref {}
 
-/// A simple multi-reference which uses `Rc`, which is technically not a garbage collector, as a
-/// baseline.
-pub struct RcMultiref {
-    refs: Mutex<Vec<Rc<Self>>>,
+macro_rules! dumpster_multiref_impl {
+    ($krate:ident) => {
+        pub mod $krate {
+            dumpster_multiref_impl!($krate::unsync);
+            dumpster_multiref_impl!($krate::sync);
+        }
+    };
+    ($krate:ident::$module:ident) => {
+        pub mod $module {
+            use crate::*;
+
+            #[derive(::$krate::Trace)]
+            #[dumpster(crate = ::$krate)]
+            pub struct MultirefImpl {
+                refs: Mutex<Vec<::$krate::$module::Gc<Self>>>,
+            }
+
+            impl Multiref for ::$krate::$module::Gc<MultirefImpl> {
+                fn new(points_to: Vec<Self>) -> Self {
+                    ::$krate::$module::Gc::new(MultirefImpl {
+                        refs: Mutex::new(points_to),
+                    })
+                }
+
+                fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
+                    f(self.refs.lock().unwrap().as_mut());
+                }
+
+                fn collect() {
+                    ::$krate::$module::collect()
+                }
+            }
+        }
+    };
 }
 
-/// A simple multi-reference which uses `Arc`, which is technically not a garbage collector, as a
-/// baseline.
-pub struct ArcMultiref {
-    refs: Mutex<Vec<Arc<Self>>>,
-}
-
-#[derive(dumpster::Trace, Debug)]
-pub struct DumpsterSyncMultiref {
-    refs: Mutex<Vec<dumpster::sync::Gc<Self>>>,
-}
-
-#[derive(dumpster::Trace)]
-pub struct DumpsterUnsyncMultiref {
-    refs: Mutex<Vec<dumpster::unsync::Gc<Self>>>,
-}
-
-pub struct GcMultiref {
-    refs: gc::GcCell<Vec<gc::Gc<GcMultiref>>>,
-}
-
-pub struct BaconRajanMultiref {
-    refs: Mutex<Vec<bacon_rajan_cc::Cc<Self>>>,
-}
-
-#[derive(shredder_derive::Scan)]
-pub struct ShredderMultiref {
-    refs: Mutex<Vec<shredder::Gc<Self>>>,
-}
-
-#[derive(shredder_derive::Scan)]
-pub struct ShredderSyncMultiref {
-    refs: Mutex<Vec<shredder::Gc<Self>>>,
-}
-
-impl bacon_rajan_cc::Trace for BaconRajanMultiref {
-    fn trace(&self, tracer: &mut bacon_rajan_cc::Tracer) {
-        self.refs.lock().unwrap().trace(tracer);
-    }
-}
-
-impl gc::Finalize for GcMultiref {}
-
-unsafe impl gc::Trace for GcMultiref {
-    #[inline]
-    unsafe fn trace(&self) {
-        self.refs.trace();
-    }
-
-    #[inline]
-    unsafe fn root(&self) {
-        self.refs.root();
-    }
-
-    #[inline]
-    unsafe fn unroot(&self) {
-        self.refs.unroot();
-    }
-
-    #[inline]
-    fn finalize_glue(&self) {
-        self.refs.finalize_glue()
-    }
-}
-
-#[derive(rust_cc::Finalize)]
-pub struct RustCcMultiRef {
-    refs: Mutex<Vec<rust_cc::Cc<RustCcMultiRef>>>,
-}
-
-unsafe impl rust_cc::Trace for RustCcMultiRef {
-    fn trace(&self, ctx: &mut rust_cc::Context<'_>) {
-        self.refs.lock().unwrap().trace(ctx)
-    }
-}
-
-pub struct TracingRcUnsyncMultiRef {
-    refs: Vec<tracing_rc::rc::Gc<TracingRcUnsyncMultiRef>>,
-}
-
-impl tracing_rc::rc::Trace for TracingRcUnsyncMultiRef {
-    fn visit_children(&self, visitor: &mut tracing_rc::rc::GcVisitor) {
-        self.refs.visit_children(visitor)
-    }
-}
-
-pub struct TracingRcSyncMultiRef {
-    refs: Mutex<Vec<tracing_rc::sync::Agc<TracingRcSyncMultiRef>>>,
-}
-
-impl tracing_rc::sync::Trace for TracingRcSyncMultiRef {
-    fn visit_children(&self, visitor: &mut tracing_rc::sync::GcVisitor) {
-        self.refs.lock().unwrap().visit_children(visitor)
-    }
-}
-
-impl Multiref for dumpster::sync::Gc<DumpsterSyncMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        dumpster::sync::Gc::new(DumpsterSyncMultiref {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {
-        dumpster::sync::collect()
-    }
-}
-
-impl Multiref for dumpster::unsync::Gc<DumpsterUnsyncMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        dumpster::unsync::Gc::new(DumpsterUnsyncMultiref {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {
-        dumpster::unsync::collect()
-    }
-}
-
-impl Multiref for gc::Gc<GcMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        gc::Gc::new(GcMultiref {
-            refs: gc::GcCell::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.refs.borrow_mut().as_mut())
-    }
-
-    fn collect() {
-        gc::force_collect();
-    }
-}
-
-impl Multiref for bacon_rajan_cc::Cc<BaconRajanMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        bacon_rajan_cc::Cc::new(BaconRajanMultiref {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {
-        bacon_rajan_cc::collect_cycles();
-        assert_eq!(bacon_rajan_cc::number_of_roots_buffered(), 0);
-    }
-}
-
-impl Multiref for shredder::Gc<ShredderMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        shredder::Gc::new(ShredderMultiref {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.get().refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {
-        shredder::synchronize_destructors();
-    }
-}
-
-impl Multiref for shredder::Gc<ShredderSyncMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        shredder::Gc::new(ShredderSyncMultiref {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.get().refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {
-        shredder::synchronize_destructors();
-    }
-}
-
-impl Multiref for rust_cc::Cc<RustCcMultiRef> {
-    fn new(points_to: Vec<Self>) -> Self {
-        rust_cc::Cc::new(RustCcMultiRef {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {
-        rust_cc::collect_cycles();
-    }
-}
-
-impl Multiref for tracing_rc::rc::Gc<TracingRcUnsyncMultiRef> {
-    fn new(points_to: Vec<Self>) -> Self {
-        tracing_rc::rc::Gc::new(TracingRcUnsyncMultiRef { refs: points_to })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.borrow_mut().refs.as_mut());
-    }
-
-    fn collect() {
-        tracing_rc::rc::collect_full();
-    }
-}
-
-impl Multiref for tracing_rc::sync::Agc<TracingRcSyncMultiRef> {
-    fn new(points_to: Vec<Self>) -> Self {
-        tracing_rc::sync::Agc::new(TracingRcSyncMultiRef {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.read().refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {
-        tracing_rc::sync::collect_full();
-    }
-}
-
-impl Multiref for Rc<RcMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        Rc::new(RcMultiref {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {}
-}
-
-impl Multiref for Arc<ArcMultiref> {
-    fn new(points_to: Vec<Self>) -> Self {
-        Arc::new(ArcMultiref {
-            refs: Mutex::new(points_to),
-        })
-    }
-
-    fn apply(&self, f: impl FnOnce(&mut Vec<Self>)) {
-        f(self.refs.lock().unwrap().as_mut());
-    }
-
-    fn collect() {}
-}
+dumpster_multiref_impl!(dumpster);
+dumpster_multiref_impl!(dumpster_foldhash_fast);
+dumpster_multiref_impl!(dumpster_foldhash_fast_fixed);
+dumpster_multiref_impl!(dumpster_foldhash_quality);
+dumpster_multiref_impl!(dumpster_foldhash_quality_fixed);
