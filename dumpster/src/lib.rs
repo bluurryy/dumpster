@@ -201,6 +201,8 @@ mod ptr;
 pub mod sync;
 pub mod unsync;
 
+use foldhash::quality::RandomState as DumpsterHasher;
+
 /// Contains the sealed trait for [`Trace`].
 mod trace {
     use crate::{sync::TraceSync, unsync::TraceUnsync, ContainsGcs, TraceWith};
