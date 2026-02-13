@@ -201,6 +201,21 @@ mod ptr;
 pub mod sync;
 pub mod unsync;
 
+/// Hasher used for internal hashmaps.
+#[derive(Default)]
+struct DumpsterHasher;
+
+impl BuildHasher for DumpsterHasher {
+    type Hasher = FoldHasher<'static>;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        #[expect(clippy::unreadable_literal)]
+        const STATE: FixedState = FixedState::with_seed(0x550d3101a02069fc);
+
+        STATE.build_hasher()
+    }
+}
+
 /// Contains the sealed trait for [`Trace`].
 mod trace {
     use crate::{sync::TraceSync, unsync::TraceUnsync, ContainsGcs, TraceWith};
@@ -376,6 +391,8 @@ pub trait Visitor {
 #[cfg(feature = "derive")]
 extern crate dumpster_derive;
 
+use std::hash::BuildHasher;
+
 #[cfg(feature = "derive")]
 /// The derive macro for implementing `Trace`.
 ///
@@ -406,6 +423,7 @@ extern crate dumpster_derive;
 /// }
 /// ```
 pub use dumpster_derive::Trace;
+use foldhash::quality::{FixedState, FoldHasher};
 
 /// Determine whether some value contains a garbage-collected pointer.
 ///
