@@ -39,7 +39,7 @@ def violin(times: dict, name: str):
         data = np.array(data)
         return data[(data >= low) & (data <= high)]
 
-    data = list(map(remove_outliers, data))
+    # data = list(map(remove_outliers, data))
 
     plt.figure(figsize=[6, 3])
     plt.violinplot(data, range(len(data)), vert=False)
