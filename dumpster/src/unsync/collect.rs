@@ -20,10 +20,22 @@ use std::{
 use crate::{
     ptr::Erased,
     unsync::{default_collect_condition, CollectInfo, Gc},
-    DumpsterHasher, Trace, Visitor,
+    FixedHasher, Trace, Visitor,
 };
 
 use super::{CollectCondition, GcBox};
+
+/// Hasher used for [`Dfs::visited`] and [`DropAlloc::visited`].
+type VisitedHasher = FixedHasher<0xD6FEF2871F42B3F2>;
+
+/// Hasher used for [`Mark::visited`] and [`DropAlloc::reachable`].
+type ReachableHasher = FixedHasher<0x8B73A8A53FFE7041>;
+
+/// Hasher used for [`Dumpster::to_collect`].
+type DumpsterHasher = FixedHasher<0x5CE7B3E991BA8757>;
+
+/// Hasher used for [`Dfs::ref_graph`].
+type RefGraphHasher = FixedHasher<0x83ED167BDF11C7BB>;
 
 thread_local! {
     /// Whether the current thread is running a cleanup process.
@@ -31,7 +43,7 @@ thread_local! {
     /// The global collection of allocation information for this thread.
     pub(super) static DUMPSTER: Dumpster = const {
         Dumpster {
-            to_collect: RefCell::new(HashMap::with_hasher(DumpsterHasher)),
+            to_collect: RefCell::new(HashMap::with_hasher(FixedHasher)),
             n_ref_drops: Cell::new(0),
             n_refs_living: Cell::new(0),
             collect_condition: Cell::new(default_collect_condition),
@@ -121,11 +133,11 @@ impl Dumpster {
             let mut dfs = Dfs {
                 visited: HashSet::with_capacity_and_hasher(
                     self.to_collect.borrow().len(),
-                    DumpsterHasher,
+                    FixedHasher,
                 ),
                 ref_graph: HashMap::with_capacity_and_hasher(
                     self.to_collect.borrow().len(),
-                    DumpsterHasher,
+                    FixedHasher,
                 ),
             };
 
@@ -136,7 +148,7 @@ impl Dumpster {
             }
 
             let mut mark = Mark {
-                visited: HashSet::with_capacity_and_hasher(dfs.visited.len(), DumpsterHasher),
+                visited: HashSet::with_capacity_and_hasher(dfs.visited.len(), FixedHasher),
             };
             for (id, reachability) in dfs
                 .ref_graph
@@ -237,9 +249,9 @@ impl Drop for Dumpster {
 /// The data required to construct the graph of reachable allocations.
 pub(super) struct Dfs {
     /// The set of allocations which have already been visited.
-    visited: HashSet<AllocationId, DumpsterHasher>,
+    visited: HashSet<AllocationId, VisitedHasher>,
     /// A map from allocation identifiers to information about their reachability.
-    ref_graph: HashMap<AllocationId, Reachability, DumpsterHasher>,
+    ref_graph: HashMap<AllocationId, Reachability, RefGraphHasher>,
 }
 
 #[derive(Debug)]
@@ -293,7 +305,7 @@ impl Visitor for Dfs {
 /// A mark traversal, which marks allocations as reachable.
 pub(super) struct Mark {
     /// The set of allocations which have been marked as reachable.
-    visited: HashSet<AllocationId, DumpsterHasher>,
+    visited: HashSet<AllocationId, ReachableHasher>,
 }
 
 impl Visitor for Mark {
@@ -322,9 +334,9 @@ impl Visitor for Mark {
 /// A visitor for dropping allocations.
 pub(super) struct DropAlloc<'a> {
     /// The set of unreachable allocations we've already visited.
-    visited: HashSet<AllocationId, DumpsterHasher>,
+    visited: HashSet<AllocationId, VisitedHasher>,
     /// The set of unreachable allocations.
-    reachable: &'a HashSet<AllocationId, DumpsterHasher>,
+    reachable: &'a HashSet<AllocationId, ReachableHasher>,
 }
 
 impl Visitor for DropAlloc<'_> {
