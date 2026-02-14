@@ -65,7 +65,8 @@ macro_rules! bench {
 fn main() {
     const N_ITERS: usize = 1_000_000;
 
-    for _ in 0..100 {
+    for i in 0..100 {
+        eprintln!("{i}");
         bench!("sync: std" dumpster::sync collect=true);
         bench!("sync: foldhash/quality" dumpster_foldhash_quality::sync collect=true);
         bench!("sync: foldhash/quality/fixed" dumpster_foldhash_quality_fixed::sync collect=true);
