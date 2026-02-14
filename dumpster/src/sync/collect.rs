@@ -33,16 +33,25 @@ use parking_lot::{Mutex, RwLock};
 #[cfg(loom)]
 use crate::sync::loom_ext::{Mutex, RwLock};
 
-use crate::{ptr::Erased, DumpsterHasher, Trace, Visitor};
+use crate::{ptr::Erased, FixedHasher, Trace, Visitor};
 
 use super::{default_collect_condition, CollectCondition, CollectInfo, Gc, GcBox, CURRENT_TAG};
+
+/// Hasher used for [`GarbageTruck::contents`].
+type GarbageTruckHasher = FixedHasher<0x656576FBC9A50394>;
+
+/// Hasher used for [`Dumpster::contents`].
+type DumpsterHasher = FixedHasher<0x89B18998C110615E>;
+
+/// Hasher used for the hashmap created in [`GarbageTruck::collect_all`].
+type RefGraphHasher = FixedHasher<0x91F64A7867EBF407>;
 
 /// The garbage truck, which is a global data structure containing information about allocations
 /// which might need to be collected.
 struct GarbageTruck {
     /// The contents of the garbage truck, containing all the allocations which need to be
     /// collected and have already been delivered by a [`Dumpster`].
-    contents: Mutex<HashMap<AllocationId, TrashCan, DumpsterHasher>>,
+    contents: Mutex<HashMap<AllocationId, TrashCan, GarbageTruckHasher>>,
     /// A lock used for synchronizing threads that are awaiting completion of a collection process.
     /// This lock should be acquired for reads by threads running a collection and for writes by
     /// threads awaiting collection completion.
@@ -78,7 +87,7 @@ pub(super) struct TrashCan {
     ptr: Erased,
     /// The function which can be used to build a reference graph.
     /// This function is safe to call on `ptr`.
-    dfs_fn: unsafe fn(Erased, &mut HashMap<AllocationId, AllocationInfo, DumpsterHasher>),
+    dfs_fn: unsafe fn(Erased, &mut HashMap<AllocationId, AllocationInfo, RefGraphHasher>),
 }
 
 #[derive(Debug)]
@@ -106,7 +115,7 @@ enum Reachability {
         /// the one we are currently building.
         n_unaccounted: usize,
         /// A function used to destroy the allocation.
-        destroy_fn: unsafe fn(Erased, &HashMap<AllocationId, AllocationInfo, DumpsterHasher>),
+        destroy_fn: unsafe fn(Erased, &HashMap<AllocationId, AllocationInfo, RefGraphHasher>),
     },
     /// The allocation here is reachable.
     /// No further information is needed.
@@ -129,7 +138,7 @@ thread_local! {
     /// the garbage truck for final collection.
     pub(super) static DUMPSTER: Dumpster = const {
         Dumpster {
-            contents: RefCell::new(HashMap::with_hasher(DumpsterHasher)),
+            contents: RefCell::new(HashMap::with_hasher(FixedHasher)),
             n_drops: Cell::new(0),
         }
     };
@@ -295,7 +304,10 @@ impl Dumpster {
     }
 
     /// Deliver the entries in this dumpster to `contents`.
-    fn deliver_to_contents(&self, contents: &mut HashMap<AllocationId, TrashCan, DumpsterHasher>) {
+    fn deliver_to_contents(
+        &self,
+        contents: &mut HashMap<AllocationId, TrashCan, GarbageTruckHasher>,
+    ) {
         for (id, can) in self.contents.borrow_mut().drain() {
             if contents.insert(id, can).is_some() {
                 unsafe {
@@ -324,7 +336,7 @@ impl GarbageTruck {
     #[cfg(not(loom))]
     const fn new() -> Self {
         Self {
-            contents: Mutex::new(HashMap::with_hasher(DumpsterHasher)),
+            contents: Mutex::new(HashMap::with_hasher(FixedHasher)),
             collecting_lock: RwLock::new(()),
             n_gcs_dropped: AtomicUsize::new(0),
             n_gcs_existing: AtomicUsize::new(0),
@@ -339,7 +351,7 @@ impl GarbageTruck {
     #[cfg(loom)]
     fn new() -> Self {
         Self {
-            contents: Mutex::new(LazyCell::new(HashMap::with_hasher(DumpsterHasher))),
+            contents: Mutex::new(LazyCell::new(HashMap::with_hasher(FixedHasher))),
             collecting_lock: RwLock::new(()),
             n_gcs_dropped: AtomicUsize::new(0),
             n_gcs_existing: AtomicUsize::new(0),
@@ -356,7 +368,7 @@ impl GarbageTruck {
 
         let to_collect = take(&mut *self.contents.lock());
 
-        let mut ref_graph = HashMap::with_capacity_and_hasher(to_collect.len(), DumpsterHasher);
+        let mut ref_graph = HashMap::with_capacity_and_hasher(to_collect.len(), FixedHasher);
 
         CURRENT_TAG.fetch_add(1, Ordering::Release);
 
@@ -440,7 +452,7 @@ impl GarbageTruck {
 /// `ptr` must have been created as a pointer to a `GcBox<T>`.
 unsafe fn dfs<T: Trace + Send + Sync + ?Sized>(
     ptr: Erased,
-    ref_graph: &mut HashMap<AllocationId, AllocationInfo, DumpsterHasher>,
+    ref_graph: &mut HashMap<AllocationId, AllocationInfo, RefGraphHasher>,
 ) {
     let box_ref = unsafe {
         // SAFETY: We require `ptr` to be a an erased pointer to `GcBox<T>`.
@@ -484,7 +496,7 @@ unsafe fn dfs<T: Trace + Send + Sync + ?Sized>(
 pub(super) struct Dfs<'a> {
     /// The reference graph.
     /// Each allocation is assigned a node.
-    ref_graph: &'a mut HashMap<AllocationId, AllocationInfo, DumpsterHasher>,
+    ref_graph: &'a mut HashMap<AllocationId, AllocationInfo, RefGraphHasher>,
     /// The allocation ID currently being visited.
     /// Used for knowing which node is the parent of another.
     current_id: AllocationId,
@@ -584,7 +596,7 @@ impl Visitor for Dfs<'_> {
 
 /// Traverse the reference graph, marking `root` and any allocations reachable from `root` as
 /// reachable.
-fn mark(root: AllocationId, graph: &mut HashMap<AllocationId, AllocationInfo, DumpsterHasher>) {
+fn mark(root: AllocationId, graph: &mut HashMap<AllocationId, AllocationInfo, RefGraphHasher>) {
     let node = graph.get_mut(&root).unwrap();
     if let Reachability::Unknown { children, .. } =
         replace(&mut node.reachability, Reachability::Reachable)
@@ -599,7 +611,7 @@ fn mark(root: AllocationId, graph: &mut HashMap<AllocationId, AllocationInfo, Du
 pub(super) struct PrepareForDestruction<'a> {
     /// The reference graph.
     /// Must have been populated with reachability already.
-    graph: &'a HashMap<AllocationId, AllocationInfo, DumpsterHasher>,
+    graph: &'a HashMap<AllocationId, AllocationInfo, RefGraphHasher>,
 }
 
 impl Visitor for PrepareForDestruction<'_> {
@@ -641,7 +653,7 @@ impl Visitor for PrepareForDestruction<'_> {
 /// `ptr` must have been created from a pointer to a `GcBox<T>`.
 unsafe fn destroy_erased<T: Trace + Send + Sync + ?Sized>(
     ptr: Erased,
-    graph: &HashMap<AllocationId, AllocationInfo, DumpsterHasher>,
+    graph: &HashMap<AllocationId, AllocationInfo, RefGraphHasher>,
 ) {
     let specified = ptr.specify::<GcBox<T>>().as_mut();
     specified

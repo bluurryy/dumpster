@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-use crate::{sync::coerce_gc, DumpsterHasher, Visitor};
+use crate::{sync::coerce_gc, FixedHasher, Visitor};
 
 use super::*;
 
@@ -407,7 +407,7 @@ fn fuzz() {
         }
     }
 
-    fn dfs(alloc: &Gc<Alloc>, graph: &mut HashMap<usize, Vec<usize>, DumpsterHasher>) {
+    fn dfs(alloc: &Gc<Alloc>, graph: &mut HashMap<usize, Vec<usize>, FixedHasher<123>>) {
         if let Entry::Vacant(v) = graph.entry(alloc.id) {
             if alloc.id == 2822 || alloc.id == 2814 {
                 println!("{} - {alloc:?}", alloc.id);
@@ -476,7 +476,7 @@ fn fuzz() {
         }
     }
 
-    let mut graph = HashMap::with_hasher(DumpsterHasher);
+    let mut graph = HashMap::with_hasher(FixedHasher);
     graph.insert(9999, Vec::new());
     for alloc in &gcs {
         graph.get_mut(&9999).unwrap().push(alloc.id);

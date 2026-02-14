@@ -8,7 +8,7 @@
 
 //! Simple tests using manual implementations of [`Trace`].
 
-use crate::{unsync::coerce_gc, DumpsterHasher, Visitor};
+use crate::{unsync::coerce_gc, FixedHasher, Visitor};
 
 use super::*;
 use std::{
@@ -653,7 +653,7 @@ fn unsync_fuzz() {
         }
     }
 
-    fn dfs(alloc: &Gc<Alloc>, graph: &mut HashMap<usize, Vec<usize>, DumpsterHasher>) {
+    fn dfs(alloc: &Gc<Alloc>, graph: &mut HashMap<usize, Vec<usize>, FixedHasher<123>>) {
         if let Entry::Vacant(v) = graph.entry(alloc.id) {
             v.insert(Vec::new());
             alloc.refs.lock().unwrap().iter().for_each(|a| {
@@ -719,7 +719,7 @@ fn unsync_fuzz() {
         }
     }
 
-    let mut graph = HashMap::with_hasher(DumpsterHasher);
+    let mut graph = HashMap::with_hasher(FixedHasher);
     graph.insert(9999, Vec::new());
     for alloc in &gcs {
         graph.get_mut(&9999).unwrap().push(alloc.id);

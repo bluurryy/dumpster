@@ -191,7 +191,11 @@ let gc1: Gc<[u8]> = Gc::new([1, 2, 3]);
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 #![warn(clippy::allow_attributes, reason = "prefer expect over allow")]
-#![allow(clippy::multiple_crate_versions, clippy::result_unit_err)]
+#![allow(
+    clippy::multiple_crate_versions,
+    clippy::result_unit_err,
+    clippy::unreadable_literal
+)]
 #![cfg_attr(feature = "coerce-unsized", feature(coerce_unsized))]
 #![cfg_attr(feature = "coerce-unsized", feature(unsize))]
 
@@ -203,16 +207,13 @@ pub mod unsync;
 
 /// Hasher used for internal hashmaps.
 #[derive(Default)]
-struct DumpsterHasher;
+struct FixedHasher<const SEED: u64>;
 
-impl BuildHasher for DumpsterHasher {
+impl<const SEED: u64> BuildHasher for FixedHasher<SEED> {
     type Hasher = FoldHasher<'static>;
 
     fn build_hasher(&self) -> Self::Hasher {
-        #[expect(clippy::unreadable_literal)]
-        const STATE: FixedState = FixedState::with_seed(0x550d3101a02069fc);
-
-        STATE.build_hasher()
+        const { FixedState::with_seed(SEED) }.build_hasher()
     }
 }
 
