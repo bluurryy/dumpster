@@ -208,3 +208,28 @@ const _: () = {
         phantom: PhantomData,
     });
 };
+
+// A field can be `trace(ignore)`d to remove its `Trace` bound.
+const _: () = {
+    #[derive(Trace)]
+    struct MyStruct {
+        #[expect(dead_code)]
+        #[dumpster(trace(ignore))]
+        untraced: DoesNotImplTrace,
+    }
+
+    assert_implements_trace(&MyStruct {
+        untraced: DoesNotImplTrace,
+    });
+};
+
+// A `trace(ignore)`d struct should not have `Trace` bounds for `T`.
+const _: () = {
+    /// A generic struct that does not trace its field.
+    #[derive(Trace)]
+    #[dumpster(trace(ignore))]
+    struct UntracedGeneric<T>(T);
+
+    assert_implements_trace(&UntracedGeneric(5i32));
+    assert_implements_trace(&UntracedGeneric(DoesNotImplTrace));
+};

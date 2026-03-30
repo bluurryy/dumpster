@@ -23,6 +23,7 @@ synstructure::decl_derive!(
 
 fn derive_trace(mut s: synstructure::Structure) -> Result<TokenStream> {
     let mut dumpster: Path = parse_quote!(::dumpster);
+    let mut trace_ignore_container = false;
 
     // look for `crate` argument
     for attr in &s.ast().attrs {
@@ -34,22 +35,77 @@ fn derive_trace(mut s: synstructure::Structure) -> Result<TokenStream> {
             if meta.path.is_ident("crate") {
                 dumpster = meta.value()?.parse()?;
                 Ok(())
+            } else if meta.path.is_ident("trace") {
+                meta.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("ignore") {
+                        trace_ignore_container = true;
+                        Ok(())
+                    } else {
+                        Err(meta.error("unsupported trace attribute"))
+                    }
+                })
             } else {
                 Err(meta.error("unsupported attribute"))
             }
         })?;
     }
 
-    // Every field must implement `Trace` (but the generics don't).
-    s.add_bounds(synstructure::AddBounds::Fields);
+    let body = if trace_ignore_container {
+        // With `trace(ignore)` no additional bounds are added.
+        s.add_bounds(synstructure::AddBounds::None);
+        quote!()
+    } else {
+        // Every field must implement `Trace` (but the generics don't).
+        s.add_bounds(synstructure::AddBounds::Fields);
 
-    let match_arms = s.each(|bi| {
-        quote! {
-            #dumpster::TraceWith::accept(#bi, visitor)?;
+        // There is no `try_filter` so we store the parse error here, to return it
+        // after the `filter` call.
+        let mut field_attr_parse_error = None;
+
+        // Filter out fields with `#[dumpster(trace(ignore))]`
+        s.filter(|bi| {
+            let mut trace_ignore = false;
+
+            for attr in &bi.ast().attrs {
+                if !attr.path().is_ident("dumpster") {
+                    continue;
+                }
+
+                let result = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("trace") {
+                        meta.parse_nested_meta(|meta| {
+                            if meta.path.is_ident("ignore") {
+                                trace_ignore = true;
+                                Ok(())
+                            } else {
+                                Err(meta.error("unsupported trace attribute argument"))
+                            }
+                        })
+                    } else {
+                        Err(meta.error("unsupported attribute"))
+                    }
+                });
+
+                if let Err(error) = result {
+                    field_attr_parse_error.get_or_insert(error);
+                }
+            }
+
+            !trace_ignore
+        });
+
+        if let Some(error) = field_attr_parse_error {
+            return Err(error);
         }
-    });
 
-    let body = quote!(match *self { #match_arms });
+        let match_arms = s.each(|bi| {
+            quote! {
+                #dumpster::TraceWith::accept(#bi, visitor)?;
+            }
+        });
+
+        quote!(match *self { #match_arms })
+    };
 
     Ok(s.gen_impl(quote! {
         gen unsafe impl<__V: #dumpster::Visitor> #dumpster::TraceWith<__V> for @Self {
