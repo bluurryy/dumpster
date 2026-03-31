@@ -6,7 +6,9 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import matplotlib.pyplot as plt
+import numpy as np
 import sys
+import os
 
 csv_file = open(sys.argv[1])
 
@@ -23,41 +25,45 @@ for line in csv_file.read().split('\n'):
     times[name][0].append(int(n_threads))
     times[name][1].append(float(time) / 1000.0)
 
-for (name, v) in multi_times.items():
-    (xs, ys) = v
-    plt.scatter(xs, ys, label=name)
-plt.xlabel('Number of threads')
-plt.ylabel('Time taken for 1M ops (ms)')
-plt.title('Parallel garbage collector scaling')
-plt.legend()
-plt.show()
-
-multi_times.pop('shredder', None)
-for (i, (name, v)) in enumerate(multi_times.items()):
-    (xs, ys) = v
-    plt.scatter(xs, ys, label=name, color=f"tab:{['blue', 'orange', 'green', 'purple'][i]}")
-plt.xlabel('Number of threads')
-plt.ylabel('Time taken for 1M ops (ms)')
-plt.title('Parallel garbage collector scaling (sans shredder)')
-plt.legend()
-plt.show()
-
 def violin(times: dict, name: str):
     data = []
     labels = []
+
     for (label, (_, ys)) in times.items():
         data.append(ys)
         labels.append(label)
 
-    fig = plt.figure()
+    def remove_outliers(data):
+        percentile = 1.0
+        low, high = np.percentile(data, [percentile, 100 - percentile])
+        data = np.array(data)
+        return data[(data >= low) & (data <= high)]
+
+    # data = list(map(remove_outliers, data))
+
+    plt.figure(figsize=[6, 3])
     plt.violinplot(data, range(len(data)), vert=False)
     plt.yticks(range(len(data)), labels=labels)
-    plt.ylabel('Garbage collector')
+    plt.ylabel('Hasher')
     plt.xlabel('Runtime for 1M ops (ms)')
-    plt.tight_layout(rect=(10, 1.08, 1.08, 1.08))
+    plt.tight_layout(rect=(0, 0, 1, 0.95))
     plt.title(name)
-    plt.show()
 
-violin(single_times, 'Single-threaded GC comparison')
-single_times.pop('shredder', None)
-violin(single_times, 'Single-threaded GC comparison (sans shredder)')
+    filename = name.replace("/", "_")
+    path = f"target/plot/{filename}.png"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    plt.savefig(path, dpi=300)
+
+topics = {}
+
+for name, xy in single_times.items():
+    topic, name = name.split(': ')
+
+    if topic not in topics.keys():
+        topics[topic] = {}
+
+    topics[topic][name] = xy
+
+for topic_name, topic in topics.items():
+    topic = dict(reversed(topic.items()))
+    violin(topic, topic_name)
