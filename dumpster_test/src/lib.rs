@@ -210,6 +210,7 @@ const _: () = {
 };
 
 // A field can be `trace(ignore)`d to remove its `Trace` bound.
+
 const _: () = {
     #[derive(Trace)]
     struct MyStruct {
@@ -218,9 +219,26 @@ const _: () = {
         untraced: DoesNotImplTrace,
     }
 
+    #[derive(Trace)]
+    struct MyTupleStruct(#[dumpster(trace(ignore))] DoesNotImplTrace);
+
+    #[derive(Trace)]
+    enum MyEnum {
+        #[expect(dead_code)]
+        Struct {
+            #[dumpster(trace(ignore))]
+            untraced: DoesNotImplTrace,
+        },
+        TupleStruct(#[dumpster(trace(ignore))] DoesNotImplTrace),
+    }
+
     assert_implements_trace(&MyStruct {
         untraced: DoesNotImplTrace,
     });
+
+    assert_implements_trace(&MyTupleStruct(DoesNotImplTrace));
+
+    assert_implements_trace(&MyEnum::TupleStruct(DoesNotImplTrace));
 };
 
 // A `trace(ignore)`d struct should not have `Trace` bounds for `T`.
